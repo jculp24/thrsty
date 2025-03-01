@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ArrowRight, ArrowLeft, MapPin, Clock, ShoppingCart, User, Home, Search, History, X, Plus, Minus, Star } from 'lucide-react';
+import { supabase } from '../supabaseClient';
 
 // Main app component that showcases various screens
 const ThrstyApp = () => {
@@ -7,11 +8,81 @@ const ThrstyApp = () => {
   const [selectedVendor, setSelectedVendor] = useState(null);
   const [cartItems, setCartItems] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
+  const [user, setUser] = useState(null);
+  const [vendors, setVendors] = useState([]);
+  const [drinks, setDrinks] = useState([]);
+  const [orders, setOrders] = useState([]);
+  const [loading, setLoading] = useState(true);
+  
+  // Check for authentication on load
+  useEffect(() => {
+    const checkUser = async () => {
+      const { data } = await supabase.auth.getUser();
+      setUser(data.user);
+      if (data.user) {
+        fetchUserData();
+      } else {
+        setLoading(false);
+      }
+    };
+    
+    checkUser();
+  }, []);
+  
+  // Fetch user data
+  const fetchUserData = async () => {
+    setLoading(true);
+    try {
+      // Fetch vendors
+      const { data: vendorData, error: vendorError } = await supabase
+        .from('vendors')
+        .select('*');
+        
+      if (vendorError) throw vendorError;
+      setVendors(vendorData);
+      
+      // Fetch user orders
+      const { data: orderData, error: orderError } = await supabase
+        .from('orders')
+        .select(`
+          *,
+          vendor:vendors(*),
+          order_items:order_items(*, drink:drinks(*))
+        `)
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false });
+        
+      if (orderError) throw orderError;
+      setOrders(orderData);
+    } catch (error) {
+      console.error('Error fetching data:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
   
   // Navigation handler
   const navigateTo = (screen, vendor = null) => {
     setCurrentScreen(screen);
-    if (vendor) setSelectedVendor(vendor);
+    if (vendor) {
+      setSelectedVendor(vendor);
+      fetchVendorMenu(vendor.id);
+    }
+  };
+  
+  // Fetch menu for selected vendor
+  const fetchVendorMenu = async (vendorId) => {
+    try {
+      const { data, error } = await supabase
+        .from('drinks')
+        .select('*')
+        .eq('vendor_id', vendorId);
+        
+      if (error) throw error;
+      setDrinks(data);
+    } catch (error) {
+      console.error('Error fetching menu:', error);
+    }
   };
   
   // Add item to cart
@@ -43,19 +114,131 @@ const ThrstyApp = () => {
     setCartItems(updatedCart);
   };
   
+  // Place order
+  const placeOrder = async () => {
+    if (!user || cartItems.length === 0) return;
+    
+    try {
+      // Calculate total amount
+      const total = cartItems.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+      const tax = total * 0.085;
+      const totalWithTax = total + tax;
+      
+      // Create order
+      const { data: order, error: orderError } = await supabase
+        .from('orders')
+        .insert([
+          {
+            user_id: user.id,
+            vendor_id: cartItems[0].vendorId,
+            status: 'Pending',
+            pickup_time: '15-20 min',
+            total_amount: totalWithTax
+          }
+        ])
+        .select()
+        .single();
+        
+      if (orderError) throw orderError;
+      
+      // Create order items
+      const orderItems = cartItems.map(item => ({
+        order_id: order.id,
+        drink_id: item.id,
+        quantity: item.quantity,
+        price: item.price
+      }));
+      
+      const { error: itemsError } = await supabase
+        .from('order_items')
+        .insert(orderItems);
+        
+      if (itemsError) throw itemsError;
+      
+      // Clear cart and navigate to order screen
+      setCartItems([]);
+      navigateTo('order');
+      
+      // Refresh orders
+      fetchUserData();
+    } catch (error) {
+      console.error('Error placing order:', error);
+      alert('There was a problem placing your order. Please try again.');
+    }
+  };
+  
+  // Handle logout
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    setUser(null);
+    setCartItems([]);
+    navigateTo('home');
+  };
+  
+  // Render login screen if not authenticated
+  if (!user && !loading) {
+    return <AuthScreen setUser={setUser} />;
+  }
+  
+  // Render loading screen
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-screen">
+        <div className="text-center">
+          <div className="w-16 h-16 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto"></div>
+          <p className="mt-4 text-gray-600">Loading THRSTY...</p>
+        </div>
+      </div>
+    );
+  }
+  
   // Render the appropriate screen
   const renderScreen = () => {
     switch(currentScreen) {
       case 'home':
-        return <HomeScreen navigateTo={navigateTo} />;
+        return <HomeScreen 
+                 navigateTo={navigateTo} 
+                 searchQuery={searchQuery} 
+                 setSearchQuery={setSearchQuery} 
+                 vendors={vendors} 
+               />;
       case 'vendor':
-        return <VendorScreen vendor={selectedVendor} navigateTo={navigateTo} addToCart={addToCart} />;
+        return <VendorScreen 
+                 vendor={selectedVendor} 
+                 navigateTo={navigateTo} 
+                 addToCart={addToCart} 
+                 drinks={drinks} 
+               />;
       case 'cart':
-        return <CartScreen cartItems={cartItems} updateQuantity={updateQuantity} navigateTo={navigateTo} />;
+        return <CartScreen 
+                 cartItems={cartItems} 
+                 updateQuantity={updateQuantity} 
+                 navigateTo={navigateTo}
+                 placeOrder={placeOrder} 
+               />;
       case 'order':
-        return <OrderScreen navigateTo={navigateTo} />;
+        return <OrderScreen 
+                 navigateTo={navigateTo}
+                 orders={orders} 
+               />;
+      case 'profile':
+        return <ProfileScreen 
+                 user={user} 
+                 handleLogout={handleLogout} 
+                 navigateTo={navigateTo} 
+               />;
+      case 'history':
+        return <OrderHistoryScreen 
+                 navigateTo={navigateTo}
+                 orders={orders} 
+               />;
       default:
-        return <HomeScreen navigateTo={navigateTo} />;
+        return <HomeScreen 
+                 navigateTo={navigateTo} 
+                 searchQuery={searchQuery} 
+                 setSearchQuery={setSearchQuery} 
+                 vendors={vendors} 
+               />;
     }
   };
   
@@ -113,51 +296,165 @@ const ThrstyApp = () => {
   );
 };
 
-// Home Screen Component
-const HomeScreen = ({ navigateTo, searchQuery, setSearchQuery }) => {
-  const vendors = [
-    {
-      id: 1, 
-      name: 'CityCenter Freestyle', 
-      image: '/api/placeholder/80/80',
-      rating: 4.8,
-      distance: '0.3 mi',
-      featured: true,
-      category: 'Coca-Cola Freestyle',
-      location: '233 Main Street'
-    },
-    {
-      id: 2, 
-      name: 'University Spire', 
-      image: '/api/placeholder/80/80',
-      rating: 4.6,
-      distance: '0.5 mi',
-      featured: true,
-      category: 'Pepsi Spire',
-      location: '500 College Ave'
-    },
-    {
-      id: 3, 
-      name: 'Downtown Fountain', 
-      image: '/api/placeholder/80/80',
-      rating: 4.5,
-      distance: '0.7 mi',
-      featured: false,
-      category: 'Classic Soda Fountain',
-      location: '55 Park Plaza'
-    },
-    {
-      id: 4, 
-      name: 'Tech Hub Beverages', 
-      image: '/api/placeholder/80/80',
-      rating: 4.7,
-      distance: '1.1 mi',
-      featured: false,
-      category: 'Coca-Cola Freestyle',
-      location: '780 Innovation Drive'
-    },
-  ];
+// Authentication Screen Component
+const AuthScreen = ({ setUser }) => {
+  const [loading, setLoading] = useState(false);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [isSignUp, setIsSignUp] = useState(false);
+  const [firstName, setFirstName] = useState('');
+  const [lastName, setLastName] = useState('');
+  const [phone, setPhone] = useState('');
+  const [message, setMessage] = useState('');
   
+  const handleAuth = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setMessage('');
+    
+    try {
+      if (isSignUp) {
+        // Sign up
+        const { data: authData, error: authError } = await supabase.auth.signUp({
+          email,
+          password,
+        });
+        
+        if (authError) throw authError;
+        
+        if (authData.user) {
+          // Store additional user info
+          const { error: userError } = await supabase
+            .from('users')
+            .insert([
+              {
+                id: authData.user.id,
+                first_name: firstName,
+                last_name: lastName,
+                email,
+                phone_number: phone
+              }
+            ]);
+            
+          if (userError) throw userError;
+          
+          setUser(authData.user);
+          setMessage('Account created successfully!');
+        } else {
+          setMessage('Check your email for the confirmation link!');
+        }
+      } else {
+        // Sign in
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email,
+          password,
+        });
+        
+        if (error) throw error;
+        setUser(data.user);
+      }
+    } catch (error) {
+      setMessage(error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+  
+  return (
+    <div className="flex flex-col items-center justify-center min-h-screen bg-gray-50 p-4">
+      <div className="w-full max-w-md bg-white rounded-lg shadow p-6">
+        <h1 className="text-2xl font-bold text-center text-blue-600 mb-6">THRSTY</h1>
+        <h2 className="text-xl font-semibold mb-4">{isSignUp ? 'Create Account' : 'Sign In'}</h2>
+        
+        {message && (
+          <div className="bg-blue-100 text-blue-700 p-3 rounded mb-4">
+            {message}
+          </div>
+        )}
+        
+        <form onSubmit={handleAuth}>
+          {isSignUp && (
+            <>
+              <div className="mb-4">
+                <label className="block text-gray-700 text-sm font-medium mb-2">First Name</label>
+                <input
+                  type="text"
+                  className="w-full p-3 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  value={firstName}
+                  onChange={(e) => setFirstName(e.target.value)}
+                  required
+                />
+              </div>
+              
+              <div className="mb-4">
+                <label className="block text-gray-700 text-sm font-medium mb-2">Last Name</label>
+                <input
+                  type="text"
+                  className="w-full p-3 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  value={lastName}
+                  onChange={(e) => setLastName(e.target.value)}
+                  required
+                />
+              </div>
+              
+              <div className="mb-4">
+                <label className="block text-gray-700 text-sm font-medium mb-2">Phone Number</label>
+                <input
+                  type="tel"
+                  className="w-full p-3 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                />
+              </div>
+            </>
+          )}
+          
+          <div className="mb-4">
+            <label className="block text-gray-700 text-sm font-medium mb-2">Email</label>
+            <input
+              type="email"
+              className="w-full p-3 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+            />
+          </div>
+          
+          <div className="mb-6">
+            <label className="block text-gray-700 text-sm font-medium mb-2">Password</label>
+            <input
+              type="password"
+              className="w-full p-3 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+            />
+          </div>
+          
+          <button
+            type="submit"
+            className="w-full bg-blue-600 text-white py-3 rounded-lg font-bold hover:bg-blue-700"
+            disabled={loading}
+          >
+            {loading ? 'Processing...' : isSignUp ? 'Sign Up' : 'Sign In'}
+          </button>
+        </form>
+        
+        <div className="mt-4 text-center">
+          <button
+            className="text-blue-600 text-sm"
+            onClick={() => setIsSignUp(!isSignUp)}
+          >
+            {isSignUp ? 'Already have an account? Sign In' : 'Need an account? Sign Up'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// Home Screen Component
+const HomeScreen = ({ navigateTo, searchQuery, setSearchQuery, vendors }) => {
   const categories = [
     { id: 1, name: 'Cola', icon: '🥤' },
     { id: 2, name: 'Diet Cola', icon: '🥤' },
@@ -165,6 +462,15 @@ const HomeScreen = ({ navigateTo, searchQuery, setSearchQuery }) => {
     { id: 4, name: 'Lemon-Lime', icon: '🍈' },
     { id: 5, name: 'Root Beer', icon: '🍺' },
   ];
+  
+  // Filter vendors by search query
+  const filteredVendors = vendors.filter(vendor => 
+    vendor.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    vendor.category.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+  
+  // Get featured vendors
+  const featuredVendors = filteredVendors.filter(v => v.is_featured);
   
   return (
     <div className="pb-4">
@@ -212,153 +518,101 @@ const HomeScreen = ({ navigateTo, searchQuery, setSearchQuery }) => {
       </div>
       
       {/* Featured Vendors */}
-      <div className="px-4 mt-2">
-        <div className="flex justify-between items-center mb-3">
-          <h2 className="text-lg font-semibold">Featured Vendors</h2>
-          <button className="text-blue-600 text-sm flex items-center">
-            View All <ArrowRight size={16} className="ml-1" />
-          </button>
-        </div>
-        
-        {vendors.filter(v => v.featured).map(vendor => (
-          <div 
-            key={vendor.id}
-            className="bg-white rounded-lg shadow mb-3 p-3 flex"
-            onClick={() => navigateTo('vendor', vendor)}
-          >
-            <img 
-              src={vendor.image} 
-              alt={vendor.name} 
-              className="w-20 h-20 rounded-lg object-cover"
-            />
-            <div className="ml-3 flex-1">
-              <div className="flex justify-between">
-                <h3 className="font-bold">{vendor.name}</h3>
-                <div className="flex items-center text-yellow-500">
-                  <Star size={16} fill="currentColor" />
-                  <span className="ml-1 text-sm text-gray-700">{vendor.rating}</span>
+      {featuredVendors.length > 0 && (
+        <div className="px-4 mt-2">
+          <div className="flex justify-between items-center mb-3">
+            <h2 className="text-lg font-semibold">Featured Vendors</h2>
+            <button className="text-blue-600 text-sm flex items-center">
+              View All <ArrowRight size={16} className="ml-1" />
+            </button>
+          </div>
+          
+          {featuredVendors.map(vendor => (
+            <div 
+              key={vendor.id}
+              className="bg-white rounded-lg shadow mb-3 p-3 flex"
+              onClick={() => navigateTo('vendor', vendor)}
+            >
+              <img 
+                src={vendor.image_url || '/api/placeholder/80/80'} 
+                alt={vendor.name} 
+                className="w-20 h-20 rounded-lg object-cover"
+              />
+              <div className="ml-3 flex-1">
+                <div className="flex justify-between">
+                  <h3 className="font-bold">{vendor.name}</h3>
+                  <div className="flex items-center text-yellow-500">
+                    <Star size={16} fill="currentColor" />
+                    <span className="ml-1 text-sm text-gray-700">{vendor.rating}</span>
+                  </div>
                 </div>
-              </div>
-              <p className="text-sm text-gray-500">{vendor.category}</p>
-              <div className="flex items-center mt-2 text-sm text-gray-500">
-                <MapPin size={14} />
-                <span className="ml-1">{vendor.distance}</span>
-                <div className="bg-blue-100 text-blue-800 ml-2 px-2 py-0.5 rounded-full text-xs">
-                  Free Delivery
+                <p className="text-sm text-gray-500">{vendor.category}</p>
+                <div className="flex items-center mt-2 text-sm text-gray-500">
+                  <MapPin size={14} />
+                  <span className="ml-1">{vendor.location}</span>
+                  <div className="bg-blue-100 text-blue-800 ml-2 px-2 py-0.5 rounded-full text-xs">
+                    Quick Pickup
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
       
       {/* Nearby Vendors */}
       <div className="px-4 mt-4">
         <h2 className="text-lg font-semibold mb-3">Nearby Vendors</h2>
         
-        {vendors.map(vendor => (
-          <div 
-            key={vendor.id}
-            className="bg-white rounded-lg shadow mb-3 p-3 flex"
-            onClick={() => navigateTo('vendor', vendor)}
-          >
-            <img 
-              src={vendor.image} 
-              alt={vendor.name} 
-              className="w-16 h-16 rounded-lg object-cover"
-            />
-            <div className="ml-3 flex-1">
-              <div className="flex justify-between">
-                <h3 className="font-semibold">{vendor.name}</h3>
-                <div className="flex items-center text-yellow-500">
-                  <Star size={14} fill="currentColor" />
-                  <span className="ml-1 text-sm text-gray-700">{vendor.rating}</span>
+        {filteredVendors.length === 0 ? (
+          <div className="bg-white rounded-lg shadow p-4 text-center text-gray-500">
+            No vendors found matching your search.
+          </div>
+        ) : (
+          filteredVendors.map(vendor => (
+            <div 
+              key={vendor.id}
+              className="bg-white rounded-lg shadow mb-3 p-3 flex"
+              onClick={() => navigateTo('vendor', vendor)}
+            >
+              <img 
+                src={vendor.image_url || '/api/placeholder/80/80'} 
+                alt={vendor.name} 
+                className="w-16 h-16 rounded-lg object-cover"
+              />
+              <div className="ml-3 flex-1">
+                <div className="flex justify-between">
+                  <h3 className="font-semibold">{vendor.name}</h3>
+                  <div className="flex items-center text-yellow-500">
+                    <Star size={14} fill="currentColor" />
+                    <span className="ml-1 text-sm text-gray-700">{vendor.rating}</span>
+                  </div>
+                </div>
+                <p className="text-xs text-gray-500">{vendor.category}</p>
+                <div className="flex items-center mt-1 text-xs text-gray-500">
+                  <MapPin size={12} />
+                  <span className="ml-1">{vendor.location}</span>
                 </div>
               </div>
-              <p className="text-xs text-gray-500">{vendor.category}</p>
-              <div className="flex items-center mt-1 text-xs text-gray-500">
-                <MapPin size={12} />
-                <span className="ml-1">{vendor.distance}</span>
-              </div>
             </div>
-          </div>
-        ))}
+          ))
+        )}
       </div>
     </div>
   );
 };
 
 // Vendor Screen Component
-const VendorScreen = ({ vendor, navigateTo, addToCart }) => {
-  const [activeCategory, setActiveCategory] = useState('Popular');
+const VendorScreen = ({ vendor, navigateTo, addToCart, drinks }) => {
+  const [activeCategory, setActiveCategory] = useState('All');
   
-  // Sample menu categories
-  const categories = ['Popular', 'Signature', 'Classics', 'Seasonal', 'Specials'];
+  // Get unique categories from drinks
+  const categories = ['All', ...new Set(drinks.map(item => item.category))];
   
-  // Sample menu items based on soda fountain/freestyle machines
-  const menuItems = [
-    { 
-      id: 1, 
-      name: 'Cherry Vanilla Coke', 
-      description: 'Classic Coca-Cola with cherry and vanilla flavoring',
-      price: 2.49, 
-      image: '/api/placeholder/80/80',
-      category: 'Popular'
-    },
-    { 
-      id: 2, 
-      name: 'Strawberry Sprite', 
-      description: 'Crisp lemon-lime Sprite with a hint of strawberry',
-      price: 2.49, 
-      image: '/api/placeholder/80/80',
-      category: 'Popular'
-    },
-    { 
-      id: 3, 
-      name: 'Orange Vanilla Coke', 
-      description: 'Coca-Cola with a refreshing blend of orange and vanilla',
-      price: 2.49, 
-      image: '/api/placeholder/80/80',
-      category: 'Signature'
-    },
-    { 
-      id: 4, 
-      name: 'Raspberry Fanta', 
-      description: 'Bubbly Fanta orange with sweet raspberry flavor',
-      price: 2.49, 
-      image: '/api/placeholder/80/80',
-      category: 'Classics'
-    },
-    { 
-      id: 5, 
-      name: 'Peach Mello Yello', 
-      description: 'Citrus Mello Yello with a smooth peach finish',
-      price: 2.49, 
-      image: '/api/placeholder/80/80',
-      category: 'Seasonal'
-    },
-    { 
-      id: 6, 
-      name: 'Diet Coke with Lime', 
-      description: 'Zero-calorie Diet Coke with a zesty lime twist',
-      price: 2.49, 
-      image: '/api/placeholder/80/80',
-      category: 'Popular'
-    },
-    { 
-      id: 7, 
-      name: 'Mountain Dew Code Red', 
-      description: 'Cherry flavored Mountain Dew with an extra kick',
-      price: 2.49, 
-      image: '/api/placeholder/80/80',
-      category: 'Signature'
-    },
-  ];
-  
-  // Filter menu items by active category
+  // Filter drinks by active category
   const filteredItems = activeCategory === 'All' 
-    ? menuItems 
-    : menuItems.filter(item => item.category === activeCategory);
+    ? drinks 
+    : drinks.filter(item => item.category === activeCategory);
   
   return (
     <div className="pb-4">
@@ -366,7 +620,7 @@ const VendorScreen = ({ vendor, navigateTo, addToCart }) => {
       <div className="relative">
         <div className="h-48 bg-gray-300">
           <img 
-            src="/api/placeholder/400/200" 
+            src={vendor?.image_url || '/api/placeholder/400/200'} 
             alt={vendor?.name} 
             className="w-full h-full object-cover"
           />
@@ -394,20 +648,20 @@ const VendorScreen = ({ vendor, navigateTo, addToCart }) => {
           </div>
           <div className="flex items-center text-gray-500">
             <MapPin size={16} />
-            <span className="ml-1">{vendor?.distance}</span>
+            <span className="ml-1">{vendor?.location}</span>
           </div>
         </div>
         
         <p className="mt-2 text-gray-600">
-          Specializing in {vendor?.category.toLowerCase()} with a focus on quality ingredients and innovative flavors.
+          {vendor?.description || `Specializing in ${vendor?.category.toLowerCase()} with a focus on quality ingredients and innovative flavors.`}
         </p>
         
         <div className="flex mt-3 space-x-2">
           <div className="bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-sm">
-            Free Delivery
+            Ready in 15min
           </div>
           <div className="bg-green-100 text-green-800 px-3 py-1 rounded-full text-sm">
-            20-30 min
+            Self Serve
           </div>
         </div>
       </div>
@@ -434,37 +688,43 @@ const VendorScreen = ({ vendor, navigateTo, addToCart }) => {
       
       {/* Menu items */}
       <div className="px-4 mt-2">
-        {filteredItems.map(item => (
-          <div key={item.id} className="bg-white rounded-lg shadow mb-3 p-3">
-            <div className="flex">
-              <img 
-                src={item.image} 
-                alt={item.name} 
-                className="w-20 h-20 rounded-lg object-cover"
-              />
-              <div className="ml-3 flex-1">
-                <h3 className="font-semibold">{item.name}</h3>
-                <p className="text-sm text-gray-500 line-clamp-2">{item.description}</p>
-                <div className="flex justify-between items-center mt-2">
-                  <span className="font-bold">${item.price.toFixed(2)}</span>
-                  <button 
-                    className="bg-blue-600 text-white px-3 py-1 rounded-full text-sm"
-                    onClick={() => addToCart(item)}
-                  >
-                    Add to Cart
-                  </button>
+        {filteredItems.length === 0 ? (
+          <div className="bg-white rounded-lg shadow p-4 text-center text-gray-500">
+            No drinks available in this category.
+          </div>
+        ) : (
+          filteredItems.map(item => (
+            <div key={item.id} className="bg-white rounded-lg shadow mb-3 p-3">
+              <div className="flex">
+                <img 
+                  src={item.image_url || '/api/placeholder/80/80'} 
+                  alt={item.name} 
+                  className="w-20 h-20 rounded-lg object-cover"
+                />
+                <div className="ml-3 flex-1">
+                  <h3 className="font-semibold">{item.name}</h3>
+                  <p className="text-sm text-gray-500 line-clamp-2">{item.description}</p>
+                  <div className="flex justify-between items-center mt-2">
+                    <span className="font-bold">${item.price.toFixed(2)}</span>
+                    <button 
+                      className="bg-blue-600 text-white px-3 py-1 rounded-full text-sm"
+                      onClick={() => addToCart(item)}
+                    >
+                      Add to Cart
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
-        ))}
+          ))
+        )}
       </div>
     </div>
   );
 };
 
 // Cart Screen Component
-const CartScreen = ({ cartItems, updateQuantity, navigateTo }) => {
+const CartScreen = ({ cartItems, updateQuantity, navigateTo, placeOrder }) => {
   const subtotal = cartItems.reduce((sum, item) => sum + (item.price * item.quantity), 0);
   const tax = subtotal * 0.085;
   const total = subtotal + tax;
@@ -501,7 +761,7 @@ const CartScreen = ({ cartItems, updateQuantity, navigateTo }) => {
               <div key={item.id} className="bg-white rounded-lg shadow mb-3 p-3">
                 <div className="flex">
                   <img 
-                    src={item.image} 
+                    src={item.image_url || '/api/placeholder/80/80'} 
                     alt={item.name} 
                     className="w-16 h-16 rounded-lg object-cover"
                   />
@@ -594,7 +854,7 @@ const CartScreen = ({ cartItems, updateQuantity, navigateTo }) => {
             </div>
             <button 
               className="w-full bg-blue-600 text-white py-3 rounded-lg font-bold"
-              onClick={() => navigateTo('order')}
+              onClick={placeOrder}
             >
               Place Order
             </button>
@@ -606,28 +866,55 @@ const CartScreen = ({ cartItems, updateQuantity, navigateTo }) => {
 };
 
 // Order Status Screen Component
-const OrderScreen = ({ navigateTo }) => {
-  // Sample order data
-  const order = {
-    id: 'ORD1234567',
-    status: 'Preparing',
-    estimatedPickup: '15-20 min',
-    items: [
-      { id: 1, name: 'Cherry Vanilla Coke', quantity: 2, price: 2.49 },
-      { id: 2, name: 'Strawberry Sprite', quantity: 1, price: 2.49 }
-    ],
-    vendor: {
-      name: 'CityCenter Freestyle',
-      image: '/api/placeholder/80/80',
-      address: '233 Main Street'
-    },
-    statusUpdates: [
-      { time: '10:15 AM', status: 'Order Placed', completed: true },
-      { time: '10:17 AM', status: 'Vendor Confirmed', completed: true },
-      { time: '10:25 AM', status: 'Preparing', completed: false },
-      { time: '10:35 AM', status: 'Ready for Pickup', completed: false }
-    ]
-  };
+const OrderScreen = ({ navigateTo, orders }) => {
+  // Find the most recent order
+  const latestOrder = orders && orders.length > 0 ? orders[0] : null;
+  
+  if (!latestOrder) {
+    return (
+      <div className="flex flex-col h-full">
+        <div className="bg-blue-600 text-white p-4">
+          <div className="flex items-center">
+            <button onClick={() => navigateTo('home')} className="text-white">
+              <ArrowLeft size={24} />
+            </button>
+            <h1 className="text-xl font-bold ml-4">Order Status</h1>
+          </div>
+        </div>
+        
+        <div className="flex-1 flex flex-col items-center justify-center p-4 text-center">
+          <div className="bg-blue-100 rounded-full p-4 mb-4">
+            <Clock size={48} className="text-blue-600" />
+          </div>
+          <h2 className="text-xl font-semibold mb-2">No Active Orders</h2>
+          <p className="text-gray-500 mb-4">You don't have any active orders at the moment.</p>
+          <button 
+            className="bg-blue-600 text-white px-6 py-2 rounded-full"
+            onClick={() => navigateTo('home')}
+          >
+            Browse Vendors
+          </button>
+        </div>
+      </div>
+    );
+  }
+  
+  // Map status to status updates
+  const statusList = ['Pending', 'Confirmed', 'Preparing', 'Ready', 'Completed'];
+  const currentStatusIndex = statusList.indexOf(latestOrder.status);
+  
+  const statusUpdates = statusList.map((status, index) => ({
+    status,
+    completed: index <= currentStatusIndex,
+    time: index === currentStatusIndex ? new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''
+  }));
+  
+  // Calculate total
+  const itemsTotal = latestOrder.order_items.reduce((sum, item) => 
+    sum + (item.price * item.quantity), 0
+  );
+  const tax = itemsTotal * 0.085;
+  const total = itemsTotal + tax;
   
   return (
     <div className="flex flex-col h-full">
@@ -639,7 +926,7 @@ const OrderScreen = ({ navigateTo }) => {
           </button>
           <h1 className="text-xl font-bold ml-4">Order Status</h1>
         </div>
-        <p className="mt-1">Order #{order.id}</p>
+        <p className="mt-1">Order #{latestOrder.id}</p>
       </div>
       
       {/* Status card */}
@@ -647,15 +934,15 @@ const OrderScreen = ({ navigateTo }) => {
         <div className="bg-white rounded-lg shadow p-4">
           <div className="flex justify-between items-center">
             <div>
-              <h2 className="text-xl font-bold text-blue-600">{order.status}</h2>
+              <h2 className="text-xl font-bold text-blue-600">{latestOrder.status}</h2>
               <p className="text-gray-500 flex items-center mt-1">
                 <Clock size={16} className="mr-1" />
-                Estimated pickup in {order.estimatedPickup}
+                Estimated pickup in {latestOrder.pickup_time}
               </p>
             </div>
             <img 
               src="/api/placeholder/100/100" 
-              alt="Delivery" 
+              alt="Pickup" 
               className="w-20 h-20" 
             />
           </div>
@@ -666,7 +953,7 @@ const OrderScreen = ({ navigateTo }) => {
       <div className="px-4 mb-4">
         <h3 className="font-semibold mb-3">Order Updates</h3>
         <div className="bg-white rounded-lg shadow p-4">
-          {order.statusUpdates.map((update, index) => (
+          {statusUpdates.map((update, index) => (
             <div key={index} className="flex mb-4 last:mb-0">
               <div className="mr-3 flex flex-col items-center">
                 <div className={`w-6 h-6 rounded-full flex items-center justify-center ${
@@ -674,15 +961,15 @@ const OrderScreen = ({ navigateTo }) => {
                 }`}>
                   {update.completed ? '✓' : ''}
                 </div>
-                {index < order.statusUpdates.length - 1 && (
+                {index < statusUpdates.length - 1 && (
                   <div className={`w-0.5 h-full ${
-                    update.completed ? 'bg-blue-600' : 'bg-gray-200'
+                    update.completed && statusUpdates[index + 1].completed ? 'bg-blue-600' : 'bg-gray-200'
                   }`}></div>
                 )}
               </div>
               <div className="flex-1">
                 <p className="font-medium">{update.status}</p>
-                <p className="text-sm text-gray-500">{update.time}</p>
+                {update.time && <p className="text-sm text-gray-500">{update.time}</p>}
               </div>
             </div>
           ))}
@@ -695,20 +982,20 @@ const OrderScreen = ({ navigateTo }) => {
         <div className="bg-white rounded-lg shadow p-4">
           <div className="flex items-center mb-4">
             <img 
-              src={order.vendor.image} 
-              alt={order.vendor.name} 
+              src={latestOrder.vendor.image_url || '/api/placeholder/80/80'} 
+              alt={latestOrder.vendor.name} 
               className="w-12 h-12 rounded-full"
             />
             <div className="ml-3">
-              <h4 className="font-semibold">{order.vendor.name}</h4>
-              <p className="text-sm text-gray-500">{order.vendor.address}</p>
+              <h4 className="font-semibold">{latestOrder.vendor.name}</h4>
+              <p className="text-sm text-gray-500">{latestOrder.vendor.location}</p>
             </div>
           </div>
           
           <div className="border-t border-gray-100 pt-3 mb-3">
-            {order.items.map(item => (
-              <div key={item.id} className="flex justify-between mb-2">
-                <span>{item.quantity}x {item.name}</span>
+            {latestOrder.order_items.map((item, index) => (
+              <div key={index} className="flex justify-between mb-2">
+                <span>{item.quantity}x {item.drink.name}</span>
                 <span>${(item.price * item.quantity).toFixed(2)}</span>
               </div>
             ))}
@@ -717,21 +1004,15 @@ const OrderScreen = ({ navigateTo }) => {
           <div className="border-t border-gray-100 pt-3">
             <div className="flex justify-between mb-1">
               <span className="text-gray-500">Subtotal</span>
-              <span>${
-                order.items.reduce((sum, item) => sum + (item.price * item.quantity), 0).toFixed(2)
-              }</span>
-            </div>
-            <div className="flex justify-between mb-1">
-              <span className="text-gray-500">Delivery Fee</span>
-              <span>$1.99</span>
+              <span>${itemsTotal.toFixed(2)}</span>
             </div>
             <div className="flex justify-between mb-1">
               <span className="text-gray-500">Tax</span>
-              <span>$1.57</span>
+              <span>${tax.toFixed(2)}</span>
             </div>
             <div className="flex justify-between font-bold mt-2">
               <span>Total</span>
-              <span>$22.03</span>
+              <span>${total.toFixed(2)}</span>
             </div>
           </div>
         </div>
@@ -744,8 +1025,8 @@ const OrderScreen = ({ navigateTo }) => {
           <div className="flex items-start">
             <MapPin size={20} className="text-blue-600 mt-1" />
             <div className="ml-2">
-              <p className="font-medium">{order.vendor.name}</p>
-              <p className="text-sm text-gray-500">{order.vendor.address}</p>
+              <p className="font-medium">{latestOrder.vendor.name}</p>
+              <p className="text-sm text-gray-500">{latestOrder.vendor.location}</p>
               <button className="text-blue-600 text-sm mt-2">Get Directions</button>
             </div>
           </div>
@@ -758,6 +1039,207 @@ const OrderScreen = ({ navigateTo }) => {
           Contact Support
         </button>
       </div>
+    </div>
+  );
+};
+
+// Order History Screen Component
+const OrderHistoryScreen = ({ navigateTo, orders }) => {
+  return (
+    <div className="flex flex-col h-full">
+      {/* Header */}
+      <div className="bg-white p-4 border-b border-gray-200">
+        <div className="flex items-center">
+          <button onClick={() => navigateTo('home')}>
+            <ArrowLeft size={24} />
+          </button>
+          <h1 className="text-xl font-bold ml-4">Order History</h1>
+        </div>
+      </div>
+      
+      {/* Orders list */}
+      <div className="flex-1 overflow-y-auto p-4">
+        {orders.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-8 text-center">
+            <div className="bg-gray-100 rounded-full p-4 mb-4">
+              <History size={48} className="text-gray-400" />
+            </div>
+            <h2 className="text-lg font-semibold mb-2">No Order History</h2>
+            <p className="text-gray-500 mb-4">You haven't placed any orders yet.</p>
+            <button 
+              className="bg-blue-600 text-white px-6 py-2 rounded-full"
+              onClick={() => navigateTo('home')}
+            >
+              Browse Vendors
+            </button>
+          </div>
+        ) : (
+          orders.map((order, index) => (
+            <div key={index} className="bg-white rounded-lg shadow mb-3 p-4">
+              <div className="flex justify-between items-center">
+                <div>
+                  <div className="flex items-center">
+                    <h3 className="font-semibold">{order.vendor.name}</h3>
+                    <span className={`ml-2 px-2 py-0.5 rounded-full text-xs ${
+                      order.status === 'Completed' ? 'bg-green-100 text-green-800' : 
+                      order.status === 'Cancelled' ? 'bg-red-100 text-red-800' :
+                      'bg-blue-100 text-blue-800'
+                    }`}>
+                      {order.status}
+                    </span>
+                  </div>
+                  <p className="text-sm text-gray-500">
+                    {new Date(order.created_at).toLocaleDateString()} • {order.order_items.length} items • ${order.total_amount.toFixed(2)}
+                  </p>
+                </div>
+                <button 
+                  className="text-blue-600"
+                  onClick={() => {
+                    // Mock opening the order details
+                    alert(`View details for order #${order.id}`);
+                  }}
+                >
+                  <ArrowRight size={20} />
+                </button>
+              </div>
+              
+              <div className="mt-2">
+                <p className="text-sm text-gray-700">
+                  {order.order_items.map((item, i) => 
+                    `${item.quantity}x ${item.drink.name}${i < order.order_items.length - 1 ? ', ' : ''}`
+                  )}
+                </p>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+};
+
+// Profile Screen Component
+const ProfileScreen = ({ user, handleLogout, navigateTo }) => {
+  const [userData, setUserData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  
+  useEffect(() => {
+    // Fetch user details
+    const fetchUserDetails = async () => {
+      setLoading(true);
+      try {
+        const { data, error } = await supabase
+          .from('users')
+          .select('*')
+          .eq('id', user.id)
+          .single();
+          
+        if (error) throw error;
+        setUserData(data);
+      } catch (error) {
+        console.error('Error fetching user details:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+    
+    fetchUserDetails();
+  }, [user.id]);
+  
+  return (
+    <div className="flex flex-col h-full">
+      {/* Header */}
+      <div className="bg-white p-4 border-b border-gray-200">
+        <div className="flex items-center">
+          <button onClick={() => navigateTo('home')}>
+            <ArrowLeft size={24} />
+          </button>
+          <h1 className="text-xl font-bold ml-4">Profile</h1>
+        </div>
+      </div>
+      
+      {loading ? (
+        <div className="flex-1 flex items-center justify-center">
+          <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+        </div>
+      ) : (
+        <div className="flex-1 overflow-y-auto p-4">
+          {/* User info */}
+          <div className="bg-white rounded-lg shadow mb-4 p-4">
+            <div className="flex items-center">
+              <div className="bg-blue-100 rounded-full p-4">
+                <User size={36} className="text-blue-600" />
+              </div>
+              <div className="ml-4">
+                <h2 className="text-xl font-semibold">{userData ? `${userData.first_name} ${userData.last_name}` : user.email}</h2>
+                <p className="text-gray-500">{user.email}</p>
+              </div>
+            </div>
+          </div>
+          
+          {/* Account settings */}
+          <div className="bg-white rounded-lg shadow mb-4">
+            <h3 className="font-semibold p-4 border-b border-gray-100">Account Settings</h3>
+            
+            <div className="divide-y divide-gray-100">
+              <button className="w-full text-left p-4 flex items-center justify-between">
+                <span>Personal Information</span>
+                <ArrowRight size={18} className="text-gray-400" />
+              </button>
+              
+              <button className="w-full text-left p-4 flex items-center justify-between">
+                <span>Payment Methods</span>
+                <ArrowRight size={18} className="text-gray-400" />
+              </button>
+              
+              <button className="w-full text-left p-4 flex items-center justify-between">
+                <span>Notifications</span>
+                <ArrowRight size={18} className="text-gray-400" />
+              </button>
+              
+              <button className="w-full text-left p-4 flex items-center justify-between">
+                <span>Privacy & Security</span>
+                <ArrowRight size={18} className="text-gray-400" />
+              </button>
+            </div>
+          </div>
+          
+          {/* Support */}
+          <div className="bg-white rounded-lg shadow mb-4">
+            <h3 className="font-semibold p-4 border-b border-gray-100">Support</h3>
+            
+            <div className="divide-y divide-gray-100">
+              <button className="w-full text-left p-4 flex items-center justify-between">
+                <span>Help Center</span>
+                <ArrowRight size={18} className="text-gray-400" />
+              </button>
+              
+              <button className="w-full text-left p-4 flex items-center justify-between">
+                <span>Contact Support</span>
+                <ArrowRight size={18} className="text-gray-400" />
+              </button>
+              
+              <button className="w-full text-left p-4 flex items-center justify-between">
+                <span>Terms of Service</span>
+                <ArrowRight size={18} className="text-gray-400" />
+              </button>
+              
+              <button className="w-full text-left p-4 flex items-center justify-between">
+                <span>Privacy Policy</span>
+                <ArrowRight size={18} className="text-gray-400" />
+              </button>
+            </div>
+          </div>
+          
+          {/* Logout button */}
+          <button 
+            className="w-full bg-red-500 text-white py-3 rounded-lg font-bold mb-8"
+            onClick={handleLogout}
+          >
+            Log Out
+          </button>
+        </div>
+      )}
     </div>
   );
 };
