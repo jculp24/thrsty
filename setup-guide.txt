@@ -1,0 +1,222 @@
+# THRSTY App - Complete Setup Guide
+
+This guide will walk you through setting up the THRSTY app from scratch, including both backend and frontend components.
+
+## Prerequisites
+
+- [Node.js](https://nodejs.org/) (v14 or higher)
+- [npm](https://www.npmjs.com/) or [yarn](https://yarnpkg.com/)
+- [Git](https://git-scm.com/)
+- [Supabase](https://supabase.com/) account
+
+## Step 1: Clone the Repository
+
+```bash
+git clone https://github.com/yourusername/thrsty-app.git
+cd thrsty-app
+```
+
+## Step 2: Set Up Supabase
+
+1. Go to [Supabase](https://supabase.com/) and create a new project.
+
+2. Once your project is created, navigate to the SQL Editor in the Supabase dashboard.
+
+3. Run the database migration scripts in the following order:
+   - `supabase/migrations/20230101_create_tables.sql`
+   - `supabase/migrations/20230102_insert_sample_data.sql`
+
+4. After running the migrations, your database should have the following tables:
+   - `users` (with links to auth.users)
+   - `vendors`
+   - `drinks`
+   - `orders`
+   - `order_items`
+   - `notifications`
+   - `vendor_admins`
+
+5. Get your Supabase URL and anonymous key from the project settings (API section).
+
+## Step 3: Set Up Backend
+
+1. Navigate to the backend directory:
+```bash
+cd backend
+```
+
+2. Install dependencies:
+```bash
+npm install
+```
+
+3. Create a `.env` file based on the example:
+```bash
+cp .env.example .env
+```
+
+4. Edit the `.env` file with your Supabase credentials:
+```
+SUPABASE_URL=your_supabase_url
+SUPABASE_ANON_KEY=your_supabase_anon_key
+PORT=3000
+NODE_ENV=development
+```
+
+5. Start the backend server:
+```bash
+npm run dev
+```
+
+The server should start on http://localhost:3000.
+
+## Step 4: Set Up Frontend
+
+1. Navigate to the frontend directory:
+```bash
+cd ../frontend
+```
+
+2. Install dependencies:
+```bash
+npm install
+```
+
+3. Create a `.env.local` file based on the example:
+```bash
+cp .env.example .env.local
+```
+
+4. Edit the `.env.local` file with your Supabase credentials:
+```
+REACT_APP_SUPABASE_URL=your_supabase_url
+REACT_APP_SUPABASE_ANON_KEY=your_supabase_anon_key
+REACT_APP_API_URL=http://localhost:3000/api
+```
+
+5. Start the frontend development server:
+```bash
+npm start
+```
+
+The React app should open in your browser at http://localhost:3000.
+
+## Step 5: Testing the Application
+
+1. Register a new user account through the app.
+
+2. Browse the vendor list and explore the different drink options.
+
+3. Add items to your cart and place an order.
+
+4. Check the order status in the Orders tab.
+
+## Step 6: Setting Up a Vendor Admin Account
+
+If you want to test the vendor functionality, you'll need to create a vendor admin account:
+
+1. First, sign up as a regular user through the app.
+
+2. In the Supabase dashboard, run the following SQL query to make your user a vendor admin:
+
+```sql
+INSERT INTO vendor_admins (vendor_id, user_id, role)
+VALUES 
+(
+  (SELECT id FROM vendors WHERE name = 'CityCenter Freestyle'), -- Select the vendor
+  'your-user-id', -- Replace with your user ID
+  'admin'
+);
+```
+
+3. You can find your user ID in the Supabase Auth users table.
+
+## Deployment
+
+### Backend Deployment to Heroku
+
+1. Install [Heroku CLI](https://devcenter.heroku.com/articles/heroku-cli) if you haven't already.
+
+2. Login to Heroku:
+```bash
+heroku login
+```
+
+3. Create a new Heroku app:
+```bash
+heroku create thrsty-backend
+```
+
+4. Set environment variables:
+```bash
+heroku config:set SUPABASE_URL=your_supabase_url
+heroku config:set SUPABASE_ANON_KEY=your_supabase_anon_key
+heroku config:set NODE_ENV=production
+```
+
+5. Deploy to Heroku:
+```bash
+git subtree push --prefix backend heroku main
+```
+
+### Frontend Deployment to Netlify
+
+1. Create a production build:
+```bash
+cd frontend
+npm run build
+```
+
+2. Install [Netlify CLI](https://docs.netlify.com/cli/get-started/):
+```bash
+npm install -g netlify-cli
+```
+
+3. Deploy to Netlify:
+```bash
+netlify deploy
+```
+
+4. Follow the prompts to complete the deployment.
+
+5. Once deployed, go to the Netlify dashboard and update the environment variables with your Supabase credentials and your deployed backend URL.
+
+## Troubleshooting
+
+### Common Issues and Solutions
+
+1. **Connection to Supabase fails**
+   - Check that your Supabase URL and key are correct
+   - Ensure that you've enabled Row Level Security (RLS) and set up the correct policies
+
+2. **Orders not showing up in order history**
+   - Check the database to see if orders are being created
+   - Verify that the user ID associated with the order matches the logged-in user
+
+3. **Backend API not accessible from frontend**
+   - Check that your backend server is running
+   - Ensure CORS is correctly configured in the backend
+   - Verify the API URL in the frontend environment variables
+
+4. **Authentication issues**
+   - Check that Supabase authentication is properly set up
+   - Ensure your protected routes are using the auth middleware
+
+## Next Steps
+
+Once you have the basic application running, consider the following enhancements:
+
+1. Implement real-time updates using Supabase subscriptions
+2. Add a vendor administration panel
+3. Implement user favorites and reordering
+4. Add payment processing integration
+5. Create a mobile app using React Native
+
+## Need Help?
+
+If you encounter any issues during setup, please:
+
+1. Check the [Supabase documentation](https://supabase.com/docs)
+2. Refer to the [React documentation](https://reactjs.org/docs/getting-started.html)
+3. Open an issue in the GitHub repository
+
+Happy coding!
