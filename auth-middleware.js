@@ -21,7 +21,7 @@ exports.protect = async (req, res, next) => {
     }
     
     // Verify token
-    const { data: session, error } = await supabase.auth.getSession();
+    const { data: session, error } = await supabase.auth.getSession(token);
     
     if (error || !session) {
       return res.status(401).json({
